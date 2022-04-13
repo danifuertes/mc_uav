@@ -59,6 +59,16 @@ and follow the
 [installation instructions](https://www.gurobi.com/documentation/8.1/quickstart_windows/installing_the_anaconda_py.html)
 . OR-Tools has to be installed too (`pip install ortools`).
 
+Finally, you can visualize an example of executions using:
+```bash
+python test_plot.py --graph_size 20 --load_path outputs/op_coop20/attention_run
+```
+
+Use the `--baseline` option to visualize the prediction of one of the baselines mentioned before:
+```bash
+python test_plot.py --graph_size 20 --baseline ortools
+```
+
 ### Other options and help
 ```bash
 python run.py -h

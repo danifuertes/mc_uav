@@ -14,8 +14,7 @@ from nets.gpn import GPN
 
 
 def arguments(args=None):
-    parser = argparse.ArgumentParser(
-        description="Attention based model for solving the Travelling Salesman Problem with Reinforcement Learning")
+    parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=5, help='Random seed to use')
 
     # Model
@@ -29,12 +28,12 @@ def arguments(args=None):
     parser.add_argument('--no_cuda', action='store_true', help='Disable CUDA')
 
     # Problem
-    parser.add_argument('--problem', default='tsp', help="The problem to solve, default 'tsp'")
+    parser.add_argument('--problem', default='op', help="The problem to solve, default 'tsp'")
     parser.add_argument('--graph_size', type=int, default=20, help="The size of the problem graph")
-    parser.add_argument('--data_distribution', type=str, default='',
-                        help='Data distribution to use during training, defaults and options depend on problem')
+    parser.add_argument('--data_distribution', type=str, default='coop',
+                        help='Data distribution to use during training. Options: coop, nocoop, const, dist, unif')
     parser.add_argument('--test_coop', type=str2bool, default=True,
-                        help="For the OP with coop distribution, set test_coop to True to see the multi-agent plot")
+                        help="For the OP with coop/nocoop distribution, set test_coop=True to see the multi-agent plot")
 
     opts = parser.parse_args(args)
     opts.use_cuda = torch.cuda.is_available() and not opts.no_cuda
