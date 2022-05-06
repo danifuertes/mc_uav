@@ -3,7 +3,7 @@
 ## Paper
 Solving a variant of the Orieentering Problem (OP) called the Orienteering Problem with Multiple Prizes and Types of
 Node (OP-MP-TN) with a cooperative multi-agent system based on Transformer Networks. For more details, please see our
-[paper](). If this code is useful for your work, please cite our paper:
+[paper](). If this repository is useful for your work, please cite our paper:
 
 ```
 
@@ -22,7 +22,7 @@ Node (OP-MP-TN) with a cooperative multi-agent system based on Transformer Netwo
 
 ## Usage
 
-First, it is necessary to create training, testing, and validation datasets:
+First, it is necessary to create training, testing, and validation sets:
 ```bash
 python create_dataset.py --graph_sizes 20 --train_sizes 1280000 --test_sizes 10000 --val_sizes 10000
 ```
