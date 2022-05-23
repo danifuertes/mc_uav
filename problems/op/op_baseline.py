@@ -1,15 +1,18 @@
 import os
 import re
+import math
 import time
+import torch
 import tempfile
 import argparse
 import numpy as np
 from tqdm import tqdm
 from datetime import timedelta
 from utils import run_all_in_pool
+from torch.utils.data import DataLoader
 from subprocess import check_call, check_output
 from problems.op.opga.opevo import run_alg as run_opga_alg
-from utils.data_utils import check_extension, load_dataset, save_dataset, str2bool
+from utils.data_utils import ScenarioDataset, load_dataset, save_dataset, str2bool
 
 MAX_LENGTH_TOL = 1e-5
 
@@ -54,7 +57,7 @@ def solve_compass_log(executable, directory, name, depot, loc, prize, max_length
             if not calc_op_length(depot, loc, tour) <= max_length:
                 print("Warning: length exceeds max length:", calc_op_length(depot, loc, tour), max_length)
             assert calc_op_length(depot, loc, tour) <= max_length + MAX_LENGTH_TOL, "Tour exceeds max_length!"
-            save_dataset((tour, duration), output_filename)
+            # save_dataset((tour, duration), output_filename)
 
         return -calc_op_total(prize, tour), tour, duration
 
@@ -162,7 +165,7 @@ def solve_opga(directory, name, depot, loc, prize, max_length, disable_cache=Fal
             max_length, return_sol=True, verbose=False
         )
         duration = time.time() - start  # Measure clock time
-        save_dataset((prize, tour, duration), problem_filename)
+        # save_dataset((prize, tour, duration), problem_filename)
 
     # First and last node are depot(s), so first node is 2 but should be 1 (as depot is 0) so subtract 1
     assert tour[0][3] == 0
@@ -188,7 +191,7 @@ def solve_gurobi(directory, name, depot, loc, prize, max_length, disable_cache=F
                 depot, loc, prize, max_length, threads=1, timeout=timeout, gap=gap
             )
             duration = time.time() - start  # Measure clock time
-            save_dataset((cost, tour, duration), problem_filename)
+            # save_dataset((cost, tour, duration), problem_filename)
 
         # First and last node are depot(s), so first node is 2 but should be 1 (as depot is 0) so subtract 1
         assert tour[0] == 0
@@ -219,7 +222,7 @@ def solve_ortools(directory, name, depot, loc, prize, max_length, sec_local_sear
             start = time.time()
             objval, tour = solve_op_ortools(depot, loc, prize, max_length, sec_local_search=sec_local_search)
             duration = time.time() - start
-            save_dataset((objval, tour, duration), problem_filename)
+            # save_dataset((objval, tour, duration), problem_filename)
         assert tour[0] == 0, "Tour must start with depot"
         tour = tour[1:]
         assert calc_op_length(depot, loc, tour) <= max_length + MAX_LENGTH_TOL, "Tour exceeds max_length!"
@@ -235,41 +238,46 @@ def solve_ortools(directory, name, depot, loc, prize, max_length, sec_local_sear
 
 def run_all_tsiligirides(
         dataset_path, sample, num_samples, eval_batch_size, max_calc_batch_size, no_cuda=False, dataset_n=None,
-        progress_bar_mininterval=0.1, seed=1234, num_depots=1):
-    import torch
-    from torch.utils.data import DataLoader
+        progress_bar_mininterval=0.1, seed=1234):
+    # import torch
+    # from torch.utils.data import DataLoader
     from utils import move_to, sample_many
     from problems.op.tsiligirides import op_tsiligirides
     from problems.op.problem_op import OP
     torch.manual_seed(seed)
 
-    dataloader = DataLoader(
-        OP.make_dataset(filename=dataset_path, num_samples=dataset_n if dataset_n is not None else 1000000,
-                        num_depots=num_depots),
-        batch_size=eval_batch_size
-    )
     device = torch.device("cuda:0" if torch.cuda.is_available() and not no_cuda else "cpu")
-    results = []
-    for batch in tqdm(dataloader, mininterval=progress_bar_mininterval):
-        start = time.time()
-        batch = move_to(batch, device)
+    graph_sizes = os.listdir(dataset_path)
+    padding = math.floor(math.log(np.max(
+        [len(os.listdir(os.path.join(dataset_path, g))) for g in graph_sizes]
+    ), 10)) + 1
+    results = [[] for _ in range(len(graph_sizes))]
+    for i, graph_size in enumerate(graph_sizes):
+        print('Graph size = {}'.format(graph_size))
+        path = os.path.join(dataset_path, graph_size)
+        dataset = ScenarioDataset(path, int(graph_size), padding)
+        dataloader = DataLoader(dataset, batch_size=eval_batch_size)
+        for batch in tqdm(dataloader, mininterval=progress_bar_mininterval):
+            start = time.time()
+            batch = move_to(batch, device)
 
-        with torch.no_grad():
-            if num_samples * eval_batch_size > max_calc_batch_size:
-                assert eval_batch_size == 1
-                assert num_samples % max_calc_batch_size == 0
-                batch_rep = max_calc_batch_size
-                iter_rep = num_samples // max_calc_batch_size
-            else:
-                batch_rep = num_samples
-                iter_rep = 1
-            sequences, costs = sample_many(
-                lambda inp: (None, op_tsiligirides(inp, sample)),
-                OP.get_costs,
-                batch, batch_rep=batch_rep, iter_rep=iter_rep)
-            duration = time.time() - start
-            results.extend(
-                [(cost.item(), np.trim_zeros(pi.cpu().numpy(), 'b'), duration) for cost, pi in zip(costs, sequences)])
+            with torch.no_grad():
+                if num_samples * eval_batch_size > max_calc_batch_size:
+                    assert eval_batch_size == 1
+                    assert num_samples % max_calc_batch_size == 0
+                    batch_rep = max_calc_batch_size
+                    iter_rep = num_samples // max_calc_batch_size
+                else:
+                    batch_rep = num_samples
+                    iter_rep = 1
+                sequences, costs = sample_many(
+                    lambda inp: (None, op_tsiligirides(inp, sample)),
+                    OP.get_costs,
+                    batch, batch_rep=batch_rep, iter_rep=iter_rep)
+                duration = time.time() - start
+                results[i].extend(
+                    [(cost.item(), np.trim_zeros(pi.cpu().numpy(), 'b'), duration)
+                     for cost, pi in zip(costs, sequences)])
     return results, eval_batch_size
 
 
@@ -278,7 +286,7 @@ if __name__ == "__main__":
     # executable = os.path.abspath(os.path.join('compass', 'compass'))
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", help="Name of the method to evaluate")
+    parser.add_argument("--method", help="Name of the method to evaluate, 'compass', 'opga' or 'tsili'")
     parser.add_argument("--datasets", nargs='+', help="Filename of the dataset(s) to evaluate")
     parser.add_argument("-f", action='store_true', help="Set true to overwrite")
     parser.add_argument("-o", default=None, help="Name of the results file to write")
@@ -291,6 +299,7 @@ if __name__ == "__main__":
     parser.add_argument('-n', type=int, help="Number of instances to process")
     parser.add_argument('--offset', type=int, help="Offset where to start processing")
     parser.add_argument('--results_dir', default='results', help="Name of results directory")
+    parser.add_argument('--ratio', type=str, default='1:1', help="Normalization ratio of the coordinates. Default 1:1")
 
     opts = parser.parse_args()
 
@@ -298,23 +307,24 @@ if __name__ == "__main__":
 
     for dataset_path in opts.datasets:
 
-        assert os.path.isfile(check_extension(dataset_path)), "File does not exist!"
+        # assert os.path.isfile(check_extension(dataset_path)), "File does not exist!"
 
-        dataset_basename, ext = os.path.splitext(os.path.split(dataset_path)[-1])
+        dataset_basename = dataset_path.replace('/', '_')
         if 'op_' not in dataset_basename:
             aux = dataset_path.split('/')[dataset_path.split('/').index('op'):]
             aux = [aux[0], aux[1] + aux[2], *aux[3:]]
             dataset_basename, _ = os.path.splitext(os.path.split('_'.join(aux))[-1])
 
         if opts.o is None:
-            results_dir = os.path.join(opts.results_dir, dataset_basename)
+            r = "" if opts.ratio == '1:1' else "_{}".format(opts.ratio.replace(':', 'r'))
+            results_dir = os.path.join(opts.results_dir, dataset_basename + r)  # , "op"
             os.makedirs(results_dir, exist_ok=True)
 
-            out_file = os.path.join(results_dir, "{}{}{}-{}{}".format(
+            out_file = os.path.join(results_dir, "{}{}{}-{}".format(
                 dataset_basename,
                 "offs{}".format(opts.offset) if opts.offset is not None else "",
                 "n{}".format(opts.n) if opts.n is not None else "",
-                opts.method, ext
+                opts.method
             ))
 
         else:
@@ -327,6 +337,8 @@ if __name__ == "__main__":
         assert match
         method = match[1]
         runs = 1 if match[2] == '' else int(match[2])
+        results = []
+        graph_sizes = os.listdir(dataset_path)
 
         if method == "tsili" or method == "tsiligreedy":
             assert opts.offset is None, "Offset not supported for Tsiligirides"
@@ -356,41 +368,82 @@ if __name__ == "__main__":
             if not os.path.isdir(target_dir):
                 os.makedirs(target_dir)
 
-            dataset = load_dataset(dataset_path)
+            # dataset = load_dataset(dataset_path)
+            padding = math.floor(math.log(np.max(
+                [len(os.listdir(os.path.join(dataset_path, g))) for g in graph_sizes]
+            ), 10)) + 1
+            for i, graph_size in enumerate(graph_sizes):
+                print('Graph size = {}'.format(graph_size))
+                path = os.path.join(dataset_path, graph_size)
+                dataset = ScenarioDataset(path, int(graph_size), padding)
+                dataloader = DataLoader(dataset, batch_size=opts.max_calc_batch_size)
+                ds = {}
+                for batch in dataloader:
+                    for k, v in batch.items():
+                        if k in ds:
+                            ds[k] = torch.cat((ds[k], v), 0)
+                        else:
+                            ds[k] = v
+                ds_list = []
+                for i in range(len(os.listdir(path))):
+                    ds_list.append(tuple())
+                    for k in ['depot', 'loc', 'prize', 'max_length']:
+                        ds_list[-1] = ds_list[-1] + (ds[k][i].tolist(),)
 
-            if method[:6] == "gurobi":
-                # use_multiprocessing = True  # We run one thread per instance
+                if method[:6] == "gurobi":
+                    # use_multiprocessing = True  # We run one thread per instance
 
-                def run_func(args):
-                    return solve_gurobi(*args, disable_cache=opts.disable_cache,
-                                        timeout=runs if method[6:] == "t" else None,
-                                        gap=float(runs) if method[6:] == "gap" else None)
-            elif method == "compass":
-                # use_multiprocessing = False
+                    def run_func(args):
+                        return solve_gurobi(*args, disable_cache=opts.disable_cache,
+                                            timeout=runs if method[6:] == "t" else None,
+                                            gap=float(runs) if method[6:] == "gap" else None)
+                elif method == "compass":
+                    # use_multiprocessing = False
 
-                def run_func(args):
-                    return solve_compass_log(executable, *args, disable_cache=opts.disable_cache)
-            elif method == "opga":
-                # use_multiprocessing = True
+                    def run_func(args):
+                        return solve_compass_log(executable, *args, disable_cache=opts.disable_cache)
+                elif method == "opga":
+                    # use_multiprocessing = True
 
-                def run_func(args):
-                    return solve_opga(*args, disable_cache=opts.disable_cache)
-            else:
-                assert method == "ortools"
-                # use_multiprocessing = True
+                    def run_func(args):
+                        return solve_opga(*args, disable_cache=opts.disable_cache)
+                else:
+                    assert method == "ortools"
+                    # use_multiprocessing = True
 
-                def run_func(args):
-                    return solve_ortools(*args, sec_local_search=runs, disable_cache=opts.disable_cache)
+                    def run_func(args):
+                        return solve_ortools(*args, sec_local_search=runs, disable_cache=opts.disable_cache)
 
-            results, parallelism = run_all_in_pool(
-                run_func,
-                target_dir, dataset, opts, use_multiprocessing=opts.multiprocessing
-            )
+                result, parallelism = run_all_in_pool(
+                    run_func,
+                    target_dir, ds_list, opts, use_multiprocessing=opts.multiprocessing
+                )
+                results.append(result)
 
         else:
             assert False, "Unknown method: {}".format(opts.method)
 
-        costs, tours, durations = zip(*results)  # Not really costs since they should be negative
+        costs, tours, durations = tuple(), tuple(), tuple()  # Not really costs since they should be negative
+        for i, result in enumerate(results):
+            cost, tour, duration = zip(*result)
+            costs = costs + cost
+            tours = tours + tour
+            durations = durations + duration
+            if len(graph_sizes) > 1:
+                print('\nGraph size = {}'.format(graph_sizes[i]))
+                print("Average cost: {} +- {}".format(np.mean(cost), 2 * np.std(cost) / np.sqrt(len(cost))))
+                print('Min cost: {} | Max cost: {}'.format(np.min(cost), np.max(cost)))
+                print("Average serial duration: {} +- {}".format(
+                    np.mean(duration), 2 * np.std(duration) / np.sqrt(len(duration))))
+                print("Average parallel duration: {}".format(np.mean(duration) / parallelism))
+                print("Calculated total duration: {} | ({:.4f} seconds) "
+                      .format(timedelta(seconds=int(np.sum(duration) / parallelism)), np.sum(duration) / parallelism))
+                nodes = []
+                for j in range(len(tour)):
+                    nodes.append(len(tour[j]))
+                print('Average number of nodes visited: {} +- {}'.format(np.mean(nodes),
+                                                                         2 * np.std(nodes) / np.sqrt(len(nodes))))
+        print('\nResults')
         print("Average cost: {} +- {}".format(np.mean(costs), 2 * np.std(costs) / np.sqrt(len(costs))))
         print('Min cost: {} | Max cost: {}'.format(np.min(costs), np.max(costs)))
         print("Average serial duration: {} +- {}".format(
@@ -404,4 +457,4 @@ if __name__ == "__main__":
         print('Average number of nodes visited: {} +- {}'
               .format(np.mean(nodes), 2 * np.std(nodes) / np.sqrt(len(nodes))))
 
-        save_dataset((results, parallelism), out_file)
+        # save_dataset((results, parallelism), out_file)
